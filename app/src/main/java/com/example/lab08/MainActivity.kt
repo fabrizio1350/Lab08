@@ -1,8 +1,15 @@
 package com.example.lab08
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -11,7 +18,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.room.Room
 import kotlinx.coroutines.launch
 import com.example.lab08.ui.theme.Lab08Theme
@@ -20,6 +30,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        createNotificationChannel(this)
+
         setContent {
             Lab08Theme {
                 val db = Room.databaseBuilder(
@@ -41,12 +53,43 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+// 🔔 Crear canal de notificaciones (Requerido para Android 8.0+)
+private fun createNotificationChannel(context: Context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val name = "Recordatorio de Tareas"
+        val descriptionText = "Notificaciones para recordar tareas pendientes"
+        val importance = NotificationManager.IMPORTANCE_DEFAULT
+        val channel = NotificationChannel("TASK_REMINDER_CHANNEL", name, importance).apply {
+            description = descriptionText
+        }
+        val notificationManager: NotificationManager =
+            context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.createNotificationChannel(channel)
+    }
+}
+
+// 🔔 Función para enviar notificación local
+private fun sendTaskNotification(context: Context, taskDescription: String) {
+    val builder = NotificationCompat.Builder(context, "TASK_REMINDER_CHANNEL")
+        .setSmallIcon(android.R.drawable.ic_popup_reminder)
+        .setContentTitle("Recordatorio de Tarea 📌")
+        .setContentText("¡No olvides completar: \"$taskDescription\"!")
+        .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+        .setAutoCancel(true)
+
+    val notificationManager =
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    notificationManager.notify(System.currentTimeMillis().toInt(), builder.build())
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TaskScreen(viewModel: TaskViewModel) {
+    val context = LocalContext.current
     val tasks by viewModel.tasks.collectAsState()
     val filterType by viewModel.filterType.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
+    val sortType by viewModel.sortType.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isSyncing by viewModel.isSyncing.collectAsState()
     val coroutineScope = rememberCoroutineScope()
@@ -58,6 +101,22 @@ fun TaskScreen(viewModel: TaskViewModel) {
     var taskToEdit by remember { mutableStateOf<Task?>(null) }
 
     val categoriesList = listOf("Todas", "General", "Trabajo", "Estudio", "Hogar")
+    val sortOptions = listOf("Creación", "Nombre", "Estado")
+
+    // Launcher para pedir permiso de notificaciones en Android 13+
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission(),
+        onResult = { }
+    )
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+                launcher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     // Filtrado por estado, categoría y búsqueda
     val filteredTasks = tasks.filter { task ->
@@ -69,6 +128,13 @@ fun TaskScreen(viewModel: TaskViewModel) {
         val matchesCategory = if (selectedCategory == "Todas") true else task.category == selectedCategory
         val matchesSearch = task.description.contains(searchQuery, ignoreCase = true)
         matchesStatus && matchesCategory && matchesSearch
+    }
+
+    // 🔀 Ordenamiento de tareas
+    val sortedTasks = when (sortType) {
+        "Nombre" -> filteredTasks.sortedBy { it.description.lowercase() }
+        "Estado" -> filteredTasks.sortedBy { it.isCompleted }
+        else -> filteredTasks.sortedBy { it.id } // Creación
     }
 
     Column(
@@ -146,7 +212,23 @@ fun TaskScreen(viewModel: TaskViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.height(8.dp))
+        // 🔀 Opciones de Ordenamiento
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+        ) {
+            Text("Ordenar:", style = MaterialTheme.typography.labelSmall)
+            sortOptions.forEach { sort ->
+                FilterChip(
+                    selected = (sortType == sort),
+                    onClick = { viewModel.setSortType(sort) },
+                    label = { Text(sort, style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+        }
 
         // ➕ Agregar Nueva Tarea
         Card(
@@ -221,6 +303,7 @@ fun TaskScreen(viewModel: TaskViewModel) {
                                 category = newCategory,
                                 repeatInterval = newRepeatInterval
                             )
+                            sendTaskNotification(context, newTaskDescription)
                             newTaskDescription = ""
                         }
                     },
@@ -240,12 +323,13 @@ fun TaskScreen(viewModel: TaskViewModel) {
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            items(filteredTasks, key = { it.id }) { task ->
+            items(sortedTasks, key = { it.id }) { task ->
                 TaskItem(
                     task = task,
                     onToggle = { viewModel.toggleTaskCompletion(task) },
                     onEdit = { taskToEdit = task },
-                    onDelete = { viewModel.deleteTask(task) }
+                    onDelete = { viewModel.deleteTask(task) },
+                    onNotify = { sendTaskNotification(context, task.description) }
                 )
             }
         }
@@ -262,18 +346,18 @@ fun TaskScreen(viewModel: TaskViewModel) {
                 Text("Eliminar todas las tareas")
             }
         }
-    }
 
-    // ✏️ Diálogo de Edición de Tarea
-    taskToEdit?.let { task ->
-        EditTaskDialog(
-            task = task,
-            onDismiss = { taskToEdit = null },
-            onConfirm = { desc, priority, category, repeat ->
-                viewModel.editTask(task, desc, priority, category, repeat)
-                taskToEdit = null
-            }
-        )
+        // Mostrar el diálogo de edición si hay una tarea seleccionada
+        taskToEdit?.let { task ->
+            EditTaskDialog(
+                task = task,
+                onDismiss = { taskToEdit = null },
+                onConfirm = { desc, priority, category, repeat ->
+                    viewModel.editTask(task, desc, priority, category, repeat)
+                    taskToEdit = null
+                }
+            )
+        }
     }
 }
 
@@ -282,7 +366,8 @@ fun TaskItem(
     task: Task,
     onToggle: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onNotify: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -336,6 +421,9 @@ fun TaskItem(
                 }
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onNotify) {
+                        Text("🔔")
+                    }
                     TextButton(onClick = onToggle) {
                         Text(if (task.isCompleted) "Completada" else "Pendiente")
                     }
