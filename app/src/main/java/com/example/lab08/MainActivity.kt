@@ -46,22 +46,29 @@ class MainActivity : ComponentActivity() {
 fun TaskScreen(viewModel: TaskViewModel) {
     val tasks by viewModel.tasks.collectAsState()
     val filterType by viewModel.filterType.collectAsState()
+    val selectedCategory by viewModel.selectedCategory.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val isSyncing by viewModel.isSyncing.collectAsState()
     val coroutineScope = rememberCoroutineScope()
 
     var newTaskDescription by remember { mutableStateOf("") }
     var selectedPriority by remember { mutableStateOf("Media") }
+    var newCategory by remember { mutableStateOf("General") }
+    var newRepeatInterval by remember { mutableStateOf("Ninguna") }
     var taskToEdit by remember { mutableStateOf<Task?>(null) }
 
-    // Filtrado y búsqueda local
+    val categoriesList = listOf("Todas", "General", "Trabajo", "Estudio", "Hogar")
+
+    // Filtrado por estado, categoría y búsqueda
     val filteredTasks = tasks.filter { task ->
-        val matchesFilter = when (filterType) {
+        val matchesStatus = when (filterType) {
             "Pendientes" -> !task.isCompleted
             "Completadas" -> task.isCompleted
             else -> true
         }
+        val matchesCategory = if (selectedCategory == "Todas") true else task.category == selectedCategory
         val matchesSearch = task.description.contains(searchQuery, ignoreCase = true)
-        matchesFilter && matchesSearch
+        matchesStatus && matchesCategory && matchesSearch
     }
 
     Column(
@@ -69,11 +76,34 @@ fun TaskScreen(viewModel: TaskViewModel) {
             .fillMaxSize()
             .padding(16.dp)
     ) {
-        Text(
-            text = "Gestor de Tareas",
-            style = MaterialTheme.typography.headlineMedium,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
+        // Cabecera con Botón de Sincronización en la Nube
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Gestor de Tareas",
+                style = MaterialTheme.typography.headlineSmall
+            )
+
+            Button(
+                onClick = { viewModel.syncWithCloud() },
+                enabled = !isSyncing
+            ) {
+                if (isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text("☁️ Nube")
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
 
         // 🔍 Barra de Búsqueda
         OutlinedTextField(
@@ -86,7 +116,7 @@ fun TaskScreen(viewModel: TaskViewModel) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 🎯 Filtros (Todas, Pendientes, Completadas)
+        // 🎯 Filtros de Estado
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
@@ -100,9 +130,25 @@ fun TaskScreen(viewModel: TaskViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        // 🏷️ Filtros de Categoría
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp)
+        ) {
+            categoriesList.forEach { cat ->
+                FilterChip(
+                    selected = (selectedCategory == cat),
+                    onClick = { viewModel.setSelectedCategory(cat) },
+                    label = { Text(cat, style = MaterialTheme.typography.labelSmall) }
+                )
+            }
+        }
 
-        // ➕ Agregar Nueva Tarea con Prioridad
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // ➕ Agregar Nueva Tarea
         Card(
             modifier = Modifier.fillMaxWidth(),
             elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
@@ -116,19 +162,52 @@ fun TaskScreen(viewModel: TaskViewModel) {
                     singleLine = true
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
+                // Prioridad
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Prioridad:")
+                    Text("Prioridad:", style = MaterialTheme.typography.bodySmall)
                     listOf("Alta", "Media", "Baja").forEach { p ->
                         FilterChip(
                             selected = (selectedPriority == p),
                             onClick = { selectedPriority = p },
-                            label = { Text(p) }
+                            label = { Text(p, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                // Categoría
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Categoría:", style = MaterialTheme.typography.bodySmall)
+                    listOf("General", "Trabajo", "Estudio", "Hogar").forEach { c ->
+                        FilterChip(
+                            selected = (newCategory == c),
+                            onClick = { newCategory = c },
+                            label = { Text(c, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                // Recurrencia
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Repetir:", style = MaterialTheme.typography.bodySmall)
+                    listOf("Ninguna", "Diaria", "Semanal").forEach { r ->
+                        FilterChip(
+                            selected = (newRepeatInterval == r),
+                            onClick = { newRepeatInterval = r },
+                            label = { Text(r, style = MaterialTheme.typography.labelSmall) }
                         )
                     }
                 }
@@ -136,20 +215,25 @@ fun TaskScreen(viewModel: TaskViewModel) {
                 Button(
                     onClick = {
                         if (newTaskDescription.isNotBlank()) {
-                            viewModel.addTask(newTaskDescription, selectedPriority)
+                            viewModel.addTask(
+                                description = newTaskDescription,
+                                priority = selectedPriority,
+                                category = newCategory,
+                                repeatInterval = newRepeatInterval
+                            )
                             newTaskDescription = ""
                         }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(top = 8.dp)
+                        .padding(top = 6.dp)
                 ) {
                     Text("Agregar Tarea")
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         // 📋 Lista de Tareas
         LazyColumn(
@@ -166,7 +250,7 @@ fun TaskScreen(viewModel: TaskViewModel) {
             }
         }
 
-        // 🗑️ Eliminar todas las tareas
+        // 🗑️ Eliminar todas
         if (tasks.isNotEmpty()) {
             Button(
                 onClick = { coroutineScope.launch { viewModel.deleteAllTasks() } },
@@ -185,8 +269,8 @@ fun TaskScreen(viewModel: TaskViewModel) {
         EditTaskDialog(
             task = task,
             onDismiss = { taskToEdit = null },
-            onConfirm = { newDesc, newPriority ->
-                viewModel.editTask(task, newDesc, newPriority)
+            onConfirm = { desc, priority, category, repeat ->
+                viewModel.editTask(task, desc, priority, category, repeat)
                 taskToEdit = null
             }
         )
@@ -209,38 +293,58 @@ fun TaskItem(
                 MaterialTheme.colorScheme.surface
         )
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = task.description,
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = "Prioridad: ${task.priority}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = when (task.priority) {
-                        "Alta" -> MaterialTheme.colorScheme.error
-                        "Baja" -> MaterialTheme.colorScheme.secondary
-                        else -> MaterialTheme.colorScheme.primary
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = task.description,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        Text(
+                            text = "P: ${task.priority}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = when (task.priority) {
+                                "Alta" -> MaterialTheme.colorScheme.error
+                                "Baja" -> MaterialTheme.colorScheme.secondary
+                                else -> MaterialTheme.colorScheme.primary
+                            }
+                        )
+                        Text(
+                            text = "🏷️ ${task.category}",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                        if (task.repeatInterval != "Ninguna") {
+                            Text(
+                                text = "🔄 ${task.repeatInterval}",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        Text(
+                            text = if (task.isSynced) "☁️ Sincronizado" else "☁️ Pendiente",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (task.isSynced) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        )
                     }
-                )
-            }
+                }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onToggle) {
-                    Text(if (task.isCompleted) "Completada" else "Pendiente")
-                }
-                TextButton(onClick = onEdit) {
-                    Text("Editar")
-                }
-                TextButton(onClick = onDelete) {
-                    Text("Borrar", color = MaterialTheme.colorScheme.error)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = onToggle) {
+                        Text(if (task.isCompleted) "Completada" else "Pendiente")
+                    }
+                    TextButton(onClick = onEdit) {
+                        Text("Editar")
+                    }
+                    TextButton(onClick = onDelete) {
+                        Text("Borrar", color = MaterialTheme.colorScheme.error)
+                    }
                 }
             }
         }
@@ -251,10 +355,12 @@ fun TaskItem(
 fun EditTaskDialog(
     task: Task,
     onDismiss: () -> Unit,
-    onConfirm: (String, String) -> Unit
+    onConfirm: (String, String, String, String) -> Unit
 ) {
     var editedDesc by remember { mutableStateOf(task.description) }
     var editedPriority by remember { mutableStateOf(task.priority) }
+    var editedCategory by remember { mutableStateOf(task.category) }
+    var editedRepeat by remember { mutableStateOf(task.repeatInterval) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -268,17 +374,51 @@ fun EditTaskDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // Prioridad
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text("Prioridad:")
+                    Text("Prioridad:", style = MaterialTheme.typography.bodySmall)
                     listOf("Alta", "Media", "Baja").forEach { p ->
                         FilterChip(
                             selected = (editedPriority == p),
                             onClick = { editedPriority = p },
-                            label = { Text(p) }
+                            label = { Text(p, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                // Categoría
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Categoría:", style = MaterialTheme.typography.bodySmall)
+                    listOf("General", "Trabajo", "Estudio", "Hogar").forEach { c ->
+                        FilterChip(
+                            selected = (editedCategory == c),
+                            onClick = { editedCategory = c },
+                            label = { Text(c, style = MaterialTheme.typography.labelSmall) }
+                        )
+                    }
+                }
+
+                // Recurrencia
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Repetir:", style = MaterialTheme.typography.bodySmall)
+                    listOf("Ninguna", "Diaria", "Semanal").forEach { r ->
+                        FilterChip(
+                            selected = (editedRepeat == r),
+                            onClick = { editedRepeat = r },
+                            label = { Text(r, style = MaterialTheme.typography.labelSmall) }
                         )
                     }
                 }
@@ -288,7 +428,7 @@ fun EditTaskDialog(
             TextButton(
                 onClick = {
                     if (editedDesc.isNotBlank()) {
-                        onConfirm(editedDesc, editedPriority)
+                        onConfirm(editedDesc, editedPriority, editedCategory, editedRepeat)
                     }
                 }
             ) {
